@@ -1,0 +1,77 @@
+import json
+import boto3
+from datetime import datetime
+
+# Initialize DynamoDB
+dynamodb = boto3.resource('dynamodb')
+table = dynamodb.Table('ProcessSensorData')  # Replace with your table name
+
+# Initialize SNS
+sns_client = boto3.client('sns')
+sns_topic_arn = 'arn:aws:sns:*your region*:*your Account ID*:SensorAlertTopic'  # Replace with your SNS topic ARN
+
+# Define threshold values
+TEMPERATURE_THRESHOLD = 30.0  # Threshold for temperature
+GAS_VALUE_THRESHOLD = 1200     # Threshold for gas value
+HUMIDITY_THRESHOLD = 70.0     # Threshold for humidity
+
+def lambda_handler(event, context):
+    # Log the received event for debugging
+    print("Received event:", json.dumps(event))
+
+    # Ensure data is in the expected format
+    try:
+        # Parse event data from AWS IoT
+        if "raw_data" in event:
+            # Handle non-JSON data
+            data = {
+                'sensor_id': event.get("sensor_id", "unknown"),
+                'timestamp': int(event.get("timestamp", datetime.now().timestamp())),
+                'data': event["raw_data"]
+            }
+        else:
+            # JSON data
+            data = {
+                'sensor_id': event.get("sensor_id", "unknown"),
+                'timestamp': int(event.get("timestamp", datetime.now().timestamp())),
+                'temperature': event.get("temperature"),
+                'humidity': event.get("humidity"),
+                'gas_value': event.get("gas_value"),
+            }
+
+        # Insert data into DynamoDB
+        response = table.put_item(Item=data)
+        print("Data saved to DynamoDB:", response)
+
+        # Check thresholds before sending an email alert
+        if (data.get("temperature") and data["temperature"] > TEMPERATURE_THRESHOLD) or \
+           (data.get("gas_value") and data["gas_value"] > GAS_VALUE_THRESHOLD) or \
+           (data.get("humidity") and data["humidity"] > HUMIDITY_THRESHOLD):
+            
+            # Prepare the message content
+            message = f"Alert! Threshold exceeded:\n\n"
+            if data.get("temperature") and data["temperature"] > TEMPERATURE_THRESHOLD:
+                message += f"Temperature: {data['temperature']}°C (Threshold: {TEMPERATURE_THRESHOLD}°C)\n"
+            if data.get("gas_value") and data["gas_value"] > GAS_VALUE_THRESHOLD:
+                message += f"Gas Value: {data['gas_value']} (Threshold: {GAS_VALUE_THRESHOLD})\n"
+            if data.get("humidity") and data["humidity"] > HUMIDITY_THRESHOLD:
+                message += f"Humidity: {data['humidity']}% (Threshold: {HUMIDITY_THRESHOLD}%)\n"
+            message += f"\nTimestamp: {datetime.fromtimestamp(data['timestamp']).isoformat()}"
+            message += f"\nSensor ID: {data['sensor_id']}"
+
+            # Send the alert to SNS
+            sns_response = sns_client.publish(
+                TopicArn=sns_topic_arn,
+                Message=message,
+                Subject="Sensor Threshold Alert"
+            )
+            print("Alert sent to SNS:", sns_response)
+
+    except Exception as e:
+        print("Error processing data:", e)
+        raise e
+
+    return {
+        'statusCode': 200,
+        'body': json.dumps('Data processed successfully')
+    }
